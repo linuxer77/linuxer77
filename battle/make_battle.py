@@ -2,7 +2,8 @@
 """
 make_battle.py  ·  builds battle-light.svg and battle-dark.svg  (18 s loop)
 
-Looks like a plain profile README. Then Charizard and Blastoise walk onto the page.
+Looks like a plain profile README. Then Charizard and Blastoise walk onto the page, and Gengar
+comes up out of the heading's rule to mess with the copy.
 
 Everything is SMIL. No JavaScript, no CSS animation, no external files: the sprite sheets
 are baked in as data URIs, so GitHub's image proxy renders it as-is. Edit H1_TEXT / PARAS
@@ -24,6 +25,13 @@ BEAT SHEET (seconds)
 13.4  Smoke clears. Both are out cold. Zzz.
 15.4  They get up, turn around and walk off. Clean page.
 18.0  Loop.
+
+GENGAR, meanwhile, up in the text
+ 0.5  Rises out of the rule. Grins. Floats down to "Software developer".
+ 3.5  Eats "developer", one letter at a time, last letter first. Licks its lips. Regrets it.
+ 7.5  Spits the letters back out, backwards ("repoleved"). They hop back into order. Gengar nods.
+ 9.8  Floats up to the heading, yanks the wave emoji off it and waves it at you.
+12.5  The explosion below startles it. It drops the wave (which bounces home) and sinks into the rule.
 """
 import base64
 import html
@@ -32,7 +40,7 @@ import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageFont
 
 HERE = Path(__file__).resolve().parent
 
@@ -43,10 +51,13 @@ TICK = 1 / 60          # PMD durations are in 60 fps game frames
 W, H, FLOOR = 830, 277, 258
 S = 2                  # sprite scale
 H1_Y, RULE_Y, P_Y = 32, 50, 84
+FONT = ImageFont.truetype("/usr/share/fonts/liberation/LiberationSans-Regular.ttf", 16)
+FONT_H1 = ImageFont.truetype("/usr/share/fonts/liberation/LiberationSans-Bold.ttf", 32)
 FONT_STACK = "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif"
 
-H1_TEXT = "Hi, I'm Harshit Gupta \U0001F44B"
-PARAS = ["Software developer"]
+H1_TEXT = "Hi, I'm Harshit Gupta"
+H1_EMOJI = "\U0001F44B"            # Gengar steals this one
+PARA = ("Software", "developer")   # Gengar eats the second word, letter by letter
 
 PALETTES = {
     "light": dict(bg="#ffffff", fg="#1f2328", rule="#d1d9e0", shadow="#1f2328", flash="#ffffff",
@@ -147,7 +158,7 @@ def g_translate(track, inner, extra=""):
 class Mon:
     """One Pokémon: its packed frame strip plus the tracks that drive it."""
 
-    def __init__(self, folder, row, anims, x0):
+    def __init__(self, folder, row, anims, x0, floor=FLOOR):
         root = ET.parse(HERE / "sprites" / folder / "AnimData.xml").getroot()
         meta = {a.findtext("Name"): a for a in root.iter("Anim")}
         frames = []                       # (RGBA crop, anchor x, anchor y)
@@ -188,6 +199,8 @@ class Mon:
         self.x = Track((x0, 0))
         self.y = Track((0, 0))
         self.face = Track(1)
+        self.op = Track(1)
+        self.floor = floor
 
     def dur(self, anim, i0=0, i1=None, speed=1.0):
         return sum(self.ticks[anim][i0:i1]) * TICK / speed
@@ -236,8 +249,9 @@ class Mon:
                + "</image></svg>")
         flip = animate(self.face, "transform", lambda v: f"{v * S} {S}", "scale", discrete=True)
         body = f'<g transform="scale({self.face.keys[0][1] * S} {S})">{flip}{img}</g>'
-        body = f'<g transform="translate(0 {FLOOR})">{g_translate(self.y, body)}</g>'
-        return g_translate(self.x, body, f' id="{uid}"')
+        body = f'<g transform="translate(0 {self.floor})">{g_translate(self.y, body)}</g>'
+        op = animate(self.op, "opacity", n, discrete=True)
+        return f'<g opacity="{static(self.op)}">{op}' + g_translate(self.x, body, f' id="{uid}"') + "</g>"
 
     @property
     def strip_len(self):
@@ -625,6 +639,167 @@ CH.frame.add(T - 0.05, CH.cells["Idle"][0])
 BL.frame.add(T - 0.05, BL.cells["Idle"][0])
 
 
+# ---------------------------------------------------------------- Gengar, up in the text
+class Glyph:
+    """A piece of the copy that can be picked up. Drawn centred on 0,0 so it spins and shrinks in place."""
+
+    def __init__(self, ch, cx, cy, size, dy, bold=False):
+        self.ch, self.size, self.dy, self.bold = ch, size, dy, bold
+        self.home = (cx, cy)
+        self.pos = Track((cx, cy))
+        self.sc = Track(1.0)
+        self.rot = Track(0.0)
+        self.op = Track(1)
+
+    def arc(self, t0, t1, to, lift=14):
+        x0, y0 = self.pos.v
+        self.pos.hold(t0)
+        self.pos.add((t0 + t1) / 2, ((x0 + to[0]) / 2, min(y0, to[1]) - lift), "out")
+        self.pos.add(t1, to, "in")
+
+    def bounce(self, t, h=4):
+        x, y = self.pos.v
+        self.pos.hold(t)
+        self.pos.add(t + 0.08, (x, y - h), "out")
+        self.pos.add(t + 0.16, (x, y), "in")
+
+    def svg(self, p):
+        rot = animate(self.rot, "transform", n, "rotate")
+        sc = animate(self.sc, "transform", lambda v: f"{v:.2f} {v:.2f}", "scale")
+        op = animate(self.op, "opacity", n, discrete=True)
+        fw = ' font-weight="600"' if self.bold else ""
+        txt = (f'<text x="0" y="{n(self.dy)}" font-size="{self.size}"{fw} text-anchor="middle" '
+               f'fill="{p["fg"]}">{html.escape(self.ch)}</text>')
+        inner = f'<g>{rot}<g>{sc}{txt}</g></g>'
+        return f'<g opacity="{static(self.op)}">{op}' + g_translate(self.pos, inner) + "</g>"
+
+
+H1_W = FONT_H1.getlength(H1_TEXT)
+WORD1_W = FONT.getlength(PARA[0])
+LETTERS, _x = [], WORD1_W + FONT.getlength(" ")
+for _c in PARA[1]:
+    _w = FONT.getlength(_c)
+    LETTERS.append(Glyph(_c, _x + _w / 2, P_Y - 5.5, 16, 5.5))
+    _x += _w
+WORD2_END = _x
+EMOJI = Glyph(H1_EMOJI, H1_W + FONT_H1.getlength(" ") + 18, H1_Y - 11, 32, 11)
+
+GG = Mon("gengar", 0, ["Idle", "Walk", "Sink", "Pose", "Eat", "Charge", "Cringe", "Shoot", "Nod", "Pull"],
+         650, floor=RULE_Y + 2)
+GG.op = Track(0)
+G_MOUTH = (0, -11 * S)                # front-facing, from the feet
+PARA_DY = P_Y + 5 - GG.floor          # standing on the paragraph line instead of the rule
+PUDDLE = Track((650, 0.0))            # (x, size) of the shadow pool Gengar comes out of
+
+
+def g_mouth(t):
+    return (GG.xat(t) + G_MOUTH[0], GG.floor + PARA_DY + G_MOUTH[1])
+
+
+# 0.5  rises out of the rule, grins
+PUDDLE.hold(0.3); PUDDLE.add(0.5, (650, 1.0), "out")
+GG.op.set(0.5, 1)
+t = GG.play(0.5, "Sink", reverse=True)
+PUDDLE.hold(t); PUDDLE.add(t + 0.3, (650, 0.0), "in")
+t = GG.play(t, "Pose")
+GG.play(t + 0.25, "Idle", until=T)
+
+# 2.3  floats down to "developer"
+GX_P = WORD2_END + 36
+GG.play(2.3, "Walk", until=3.25)
+GG.x.hold(2.3); GG.x.add(3.25, (GX_P, 0), "inout")
+GG.y.hold(2.3); GG.y.add(2.75, (0, -10), "out"); GG.y.add(3.25, (0, PARA_DY), "inout")
+GG.play(3.25, "Idle", until=T)
+
+# 3.5  eats it, last letter first
+GG.play(3.45, "Eat", until=6.15)
+for k, g in enumerate(reversed(LETTERS)):
+    te = 3.5 + k * 0.28
+    g.arc(te, te + 0.25, g_mouth(te), lift=12)
+    g.sc.hold(te); g.sc.add(te + 0.25, 0.3, "in")
+    g.rot.hold(te); g.rot.add(te + 0.25, -180, "in")
+    g.op.set(te + 0.25, 0)
+
+# 6.15  licks its lips. Then the aftertaste kicks in
+GG.play(6.15, "Charge", until=6.75)
+GG.play(6.75, "Cringe", until=7.35)
+GG.x.hold(6.75)
+for k in range(10):
+    GG.x.add(6.8 + k * 0.05, (GX_P + (2 if k % 2 else -2), 0))
+GG.x.add(7.35, (GX_P, 0))
+
+# 7.35  spits it back out. Backwards.
+t = 7.35
+spit = t + GG.dur("Shoot", 0, 4)
+GG.play(t, "Shoot", 0, 5)
+GG.play(spit + 0.25, "Shoot", 5, speed=1.4)
+GG.play(spit + 0.6, "Idle", until=T)
+n_l = len(LETTERS)
+for i, g in enumerate(LETTERS):
+    ts = spit + 0.03 * (n_l - 1 - i)
+    g.pos.set(ts, g_mouth(ts))
+    g.op.set(ts, 1)
+    g.sc.set(ts, 0.3); g.sc.add(ts + 0.38, 1.0, "out")
+    g.rot.set(ts, 200); g.rot.add(ts + 0.38, 0, "out")
+    g.arc(ts, ts + 0.38, LETTERS[n_l - 1 - i].home, lift=26)
+    g.bounce(ts + 0.38)
+
+# 8.6  the letters sort themselves out
+for i, g in enumerate(LETTERS):
+    tu = 8.6 + 0.05 * i
+    g.arc(tu, tu + 0.4, g.home, lift=12 if i % 2 else -10)
+    g.bounce(tu + 0.4, 3)
+GG.play(9.3, "Nod", speed=0.8)
+GG.play(9.3 + GG.dur("Nod", speed=0.8), "Idle", until=T)
+
+# 9.8  floats up to the heading and yanks the wave off it
+GX_E = EMOJI.home[0] + 54
+GG.play(9.8, "Walk", until=10.55)
+GG.x.hold(9.8); GG.x.add(10.55, (GX_E, 0), "inout")
+GG.y.hold(9.8); GG.y.add(10.55, (0, 0), "inout")
+GG.play(10.6, "Pull", until=11.3)
+EMOJI.rot.hold(10.65)
+for k in range(8):
+    EMOJI.rot.add(10.7 + k * 0.075, 10 if k % 2 else -10)
+pop = 11.3
+puff(pop, EMOJI.home, 4, 5, 0.45, "smoke", rise=12, spread=20)
+HAND = (GX_E - 32, GG.floor - 24)
+EMOJI.rot.add(pop + 0.3, -20, "out")
+EMOJI.sc.hold(pop); EMOJI.sc.add(pop + 0.3, 0.75, "out")
+EMOJI.arc(pop, pop + 0.3, HAND, lift=6)
+GG.play(pop, "Pose")
+GG.play(pop + GG.dur("Pose") + 0.1, "Idle", until=T)
+
+# 11.7  waves it at you. Hi!
+k = 0
+while EMOJI.rot.t < 12.4:
+    EMOJI.rot.add(EMOJI.rot.t + 0.2, 25 if k % 2 else -25, "inout")
+    k += 1
+
+# 12.47  the explosion below startles it: drops the wave and sinks into the rule
+GG.play(boom, "Cringe", until=13.15)
+GG.y.hold(boom); GG.y.add(boom + 0.1, (0, -8), "out"); GG.y.add(boom + 0.3, (0, 0), "in")
+EMOJI.rot.hold(boom); EMOJI.rot.add(boom + 0.35, 0, "out")
+EMOJI.sc.hold(boom); EMOJI.sc.add(boom + 0.35, 1.0, "out")
+EMOJI.arc(boom + 0.02, boom + 0.4, EMOJI.home, lift=18)
+EMOJI.bounce(boom + 0.4, 5)
+PUDDLE.set(13.0, (GX_E, 0.0)); PUDDLE.add(13.2, (GX_E, 1.0), "out")
+t = GG.play(13.2, "Sink")
+GG.op.set(t + 0.05, 0)
+PUDDLE.hold(t); PUDDLE.add(t + 0.3, (GX_E, 0.0), "in")
+
+
+def puddle(p):
+    pos = Track((650, RULE_Y + 1))
+    pos.keys = [[t, (v[0], RULE_Y + 1), e] for t, v, e in PUDDLE.keys]
+    size = Track(0.0)
+    size.keys = [[t, v[1], e] for t, v, e in PUDDLE.keys]
+    sc = animate(size, "transform", lambda v: f"{v:.2f} {v:.2f}", "scale")
+    pool = (f'<g transform="scale(0 0)">{sc}<ellipse rx="22" ry="4" fill="#4b2a7b" opacity="0.75"/>'
+            f'<ellipse rx="13" ry="2.2" fill="#2a1450" opacity="0.8"/></g>')
+    return g_translate(pos, pool)
+
+
 # ---------------------------------------------------------------- output
 def water_beam(p):
     """Hydro Pump: a beam from the cannon to water_end, drawn as a scaled bar plus a foamy tip."""
@@ -655,10 +830,12 @@ def build(mode):
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" '
            f'font-family="{html.escape(FONT_STACK, quote=True)}">{defs}',
            f'<rect width="{W}" height="{H}" fill="{p["bg"]}"/>']
-    page = [f'<text x="0" y="{H1_Y}" font-size="32" font-weight="600" fill="{p["fg"]}">{html.escape(H1_TEXT)}</text>',
-            f'<path d="M0,{RULE_Y} H{W}" stroke="{p["rule"]}" stroke-width="1"/>']
-    for i, para in enumerate(PARAS):
-        page.append(f'<text x="0" y="{P_Y + i * 40}" font-size="16" fill="{p["fg"]}">{html.escape(para)}</text>')
+    page = [f'<text x="0" y="{H1_Y}" font-size="32" font-weight="600" fill="{p["fg"]}" '
+            f'textLength="{n(H1_W)}">{html.escape(H1_TEXT)}</text>',
+            f'<path d="M0,{RULE_Y} H{W}" stroke="{p["rule"]}" stroke-width="1"/>',
+            f'<text x="0" y="{P_Y}" font-size="16" fill="{p["fg"]}" textLength="{n(WORD1_W)}">{PARA[0]}</text>',
+            puddle(p), GG.svg(p, "gengar")]
+    page += [g.svg(p) for g in LETTERS + [EMOJI]]
     page += [CH.shadow_svg(p), BL.shadow_svg(p), BL.svg(p, "blastoise"), CH.svg(p, "charizard"),
              water_beam(p)]
     for pool in FX.values():
