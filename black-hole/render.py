@@ -10,12 +10,14 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter
 
 WIDTH, HEIGHT = 880, 300
 CENTER_X, CENTER_Y = 440, 145
 FIRST_PICKUP = 2.8
 CAPTURE_INTERVAL = 0.43
+FALL_TIME = .68
+TRACK_Y = HEIGHT * .74
 SHADOW = sqrt(27)
 DISK_SPAN = 44
 DISK_WIDTH = 352
@@ -180,7 +182,7 @@ def layout():
 
 
 GLYPHS = layout()
-LAST_CAPTURE = FIRST_PICKUP + len(GLYPHS) * CAPTURE_INTERVAL
+LAST_CAPTURE = FIRST_PICKUP + (len(GLYPHS) - 1) * CAPTURE_INTERVAL + FALL_TIME
 COLLAPSE = LAST_CAPTURE + 0.68
 DOT = COLLAPSE + 1.15
 BANG = DOT + 0.28
@@ -198,16 +200,17 @@ TRACK = np.maximum.accumulate([
 
 def hole(time):
     progress = min(len(GLYPHS), max(0, (time - FIRST_PICKUP) / CAPTURE_INTERVAL))
-    eaten = int(progress)
+    arrivals = np.clip((time - FIRST_PICKUP - FALL_TIME) / CAPTURE_INTERVAL + 1, 0, len(GLYPHS))
+    eaten = int(arrivals)
     prev = max(0, eaten - 1)
-    radius = RADII[prev] + (RADII[eaten] - RADII[prev]) * smooth(0, .36, progress - eaten)
+    radius = RADII[prev] + (RADII[eaten] - RADII[prev]) * smooth(0, .36, arrivals - eaten)
     if time >= LAST_CAPTURE:
         radius = RADII[-2] + (RADII[-1] - RADII[-2]) * smooth(LAST_CAPTURE, LAST_CAPTURE + .16, time)
     x = np.interp(progress, range(len(TRACK)), TRACK)
     if time < FIRST_PICKUP:
         x = -WIDTH / 2 - 18 + (TRACK[0] + WIDTH / 2 + 18) * smooth(.85, FIRST_PICKUP, time)
     drift = smooth(LAST_CAPTURE - CAPTURE_INTERVAL, COLLAPSE, time)
-    y = TEXT_BASELINE + 46 - CENTER_Y + .65 * radius + 3 * sin(progress * .2)
+    y = TRACK_Y - CENTER_Y + .18 * radius + 3 * sin(progress * .2)
     return x + 13 * drift, y, radius
 
 
@@ -215,7 +218,7 @@ def lensed(x, y, time):
     cx, cy, radius = hole(time)
     dx, dy = x - cx, y - cy
     d = hypot(dx, dy)
-    reach = 3 * radius + 63
+    reach = 3 * radius + 175
     einstein = radius * 1.25 * (1 - smooth(reach * .45, reach, d))
     gap = hypot(d, 2 * einstein)
     magnification = (1 + gap / d) / 2
@@ -264,11 +267,21 @@ def build_letters():
             lx, ly, angle, radial, tangent = lensed(x, y, t)
             frames.append((t, pose(matrix(lx, ly, angle, radial, tangent, 0))))
         cx, cy, radius = hole(start)
-        orbit = spiral(lx - cx, ly - cy, radius)
-        for p in np.linspace(0, 1, 20)[1:]:
-            t = start + p * CAPTURE_INTERVAL
+        # A long accelerating fall delivers the glyph to the local capture orbit.
+        # Keeping that orbit close to the horizon lets it fit beneath the text.
+        dx0, dy0 = lx - cx, ly - cy
+        orbit_fraction = (radius + 29) / hypot(dx0, dy0)
+        orbit = spiral(dx0 * orbit_fraction, dy0 * orbit_fraction, radius)
+        for p in np.linspace(0, 1, 32)[1:]:
+            t = start + p * FALL_TIME
             cx, cy, _ = hole(t)
-            dx, dy = orbit[round(p * (len(orbit) - 1))]
+            if p < .57:
+                q = p / .57
+                approach = 1 - (1 - orbit_fraction) * q**1.85
+                dx = dx0 * approach + 14 * sin(pi * q)**2
+                dy = dy0 * approach
+            else:
+                dx, dy = orbit[round((p - .57) / .43 * (len(orbit) - 1))]
             size = 1 - .92 * smooth(.05, 1, p)
             stretch = 1 + 1.8 * smooth(.2, .87, p)
             transform = matrix(cx + dx, cy + dy, atan2(dy, dx),
@@ -278,7 +291,7 @@ def build_letters():
         rng = np.random.default_rng(810 + i)
         azimuth = rng.uniform(0, 2 * pi)
         speed = rng.uniform(70, 155)
-        release = BANG + rng.uniform(.035, .16)
+        release = BANG + .06 + hypot(x - bx, y - by) / 2100 + rng.uniform(0, .09)
         duration = rng.uniform(1.16, 1.66)
         for p in np.linspace(0, 1, 33):
             t = release + p * duration
@@ -286,7 +299,7 @@ def build_letters():
             travel = smooth(.02, 1, p)
             size = .08 + .92 * smooth(0, .67, p)
             transform = matrix(bx + (x - bx) * travel + kick * speed * cos(azimuth),
-                               by + (y - by) * travel + kick * speed * sin(azimuth) * .64,
+                               by + (y - by) * travel + kick * speed * sin(azimuth) * .40,
                                0, size, size, 2.6 * sin(azimuth) * (1 - travel))
             frames.append((t, pose(transform, smooth(.025, .2, p))))
         frames.append((DURATION, pose(home)))
@@ -321,83 +334,73 @@ def effect_styles():
     return "\n".join(styles)
 
 
-BLAST_WIDTH, BLAST_HEIGHT = 432, 232
-BLAST_FRAMES, BLAST_SECONDS = 42, 1.68
-
-
-def shell_emission(phase):
-    """Integrate a turbulent, optically thin shell along the line of sight."""
-    coord = np.linspace(-1.4, 1.4, 240, dtype=np.float32)
-    x, y = np.meshgrid(coord, coord)
-    light = np.zeros_like(x)
-    for z in np.linspace(-1.3, 1.3, 57):
-        r = np.sqrt(x*x + y*y + z*z)
-        warp = .68 * np.sin(3*x + 4*y - z + phase*.37) + .32 * np.cos(5*z - 4*x - phase*.45)
-        curls = np.sin(13*y + 5*z + 4*warp) * np.cos(9*x - 7*z + 3*warp + phase)
-        fine = np.sin(30*x + 18*z + 5*curls) * np.cos(17*y - 21*z + 3*warp)
-        front = .86 + .12 * warp + .09 * curls + .026 * fine
-        depth = (r - front) / .043
-        knots = np.exp(.9 * curls + .55 * fine + .7 * warp)
-        light += np.exp(-depth**2) * knots * .19
-    return light
+# Paint the burst across the entire banner so fast material can leave the frame.
+BLAST_WIDTH, BLAST_HEIGHT = WIDTH, HEIGHT
+BLAST_FRAMES, BLAST_SECONDS = 48, 1.8
 
 
 def blast_strip():
-    volumes = [shell_emission(phase) for phase in (0, .8, 1.6)]
     rng = np.random.default_rng(448)
-    angles = rng.uniform(0, 2*pi, 96)
-    speeds = rng.uniform(190, 455, len(angles))
-    velocities = np.column_stack((np.cos(angles), .57*np.sin(angles))) * speeds[:, None]
-    luminosity = rng.uniform(.12, 1.4, (len(angles), 1))
-    height, width = BLAST_HEIGHT, BLAST_WIDTH
-    y, x = np.mgrid[:height, :width] - np.array([height / 2, width / 2])[:, None, None]
-    # Resolve the fast ejecta in the same tilted plane as the accretion disk.
-    tilt = -10 * pi / 180
-    along, across = x*cos(tilt) + y*sin(tilt), y*cos(tilt) - x*sin(tilt)
-    strip = Image.new("RGBA", (width, height * BLAST_FRAMES))
+    bx, by, _ = hole(BANG)
+    ox, oy = bx + CENTER_X, by + CENTER_Y
+    yy, xx = np.mgrid[:HEIGHT, :WIDTH]
+    dx, dy = xx - ox, yy - oy
+    # Shred the disk into ballistic filaments. Within each stream, nearby gas
+    # shares a launch angle and speed, producing folds with distinct bright tips.
+    streams, fibers = 38, 17
+    side = rng.choice([-1, 1], (streams, 1))
+    speed = side * rng.uniform(370, 1150, (streams, 1)) * rng.normal(1, .093, (streams, fibers))
+    pitch = rng.normal(-.14, .21, (streams, 1)) + rng.normal(0, .014, speed.shape)
+    curl = rng.uniform(-52, 52, (streams, 1)) + rng.normal(0, 3, speed.shape)
+    launch = rng.uniform(0, .17, (streams, 1)) + rng.uniform(0, .035, speed.shape)
+    length = rng.uniform(.07, .29, (streams, 1)) * rng.uniform(.6, 1.4, speed.shape)
+    phase = rng.uniform(-.6, .6, (streams, 1))
+    cool = rng.random((streams, 1)) < .31
+    tint = np.where(cool, .12, rng.uniform(.66, 1, (streams, 1)))
+    brightness = rng.uniform(.25, .95, speed.shape)
+    strip = Image.new("RGBA", (WIDTH, HEIGHT * BLAST_FRAMES))
+
     for i in range(1, BLAST_FRAMES):
         t = i * BLAST_SECONDS / BLAST_FRAMES
-        radius = 9 + 95 * (1 - np.exp(-2.6*t))
-        phase = 2 * smooth(0, BLAST_SECONDS, t)
-        k = min(int(phase), 1)
-        mix = phase - k
-        shell = Image.fromarray((1 - mix) * volumes[k] + mix * volumes[k + 1])
-        scale = shell.width / (2.8 * radius)
-        sample = shell.transform((width, height), Image.Transform.AFFINE,
-                                 (scale, -.15*scale, shell.width/2 - scale*(width-.15*height)/2,
-                                  .12*scale, 1.16*scale, shell.height/2 - scale*(.12*width+1.16*height)/2),
-                                 Image.Resampling.BILINEAR)
-        gas = np.asarray(sample) * np.exp(-2.5*t) * 1.7
-        # A fast, thin sheet of ejecta tears away along the disk before the shell cools.
-        span = 7 + 179 * (1 - np.exp(-4.3*t))
-        sheet = np.exp(-(along/span)**4 - (across/(1.6 + 3*t))**2)
-        filaments = (.65 + .35*np.cos(24*along/span + 3*np.sin(6*along/span)))**2
-        sheet *= filaments * np.exp(-4.4*t) * 2.8
-        # Draw each hot fragment over a short exposure. Its trail shortens as it slows.
-        exposure = np.linspace(max(0, t-.028), t, 10)
-        displacement = (1 - np.exp(-1.95*exposure)) / 1.95
-        traces = velocities[:, None, :] * displacement[None, :, None]
-        px = np.rint(width/2 + traces[..., 0]).astype(int)
-        py = np.rint(height/2 + traces[..., 1]).astype(int)
-        inside = (px >= 0) & (px < width) & (py >= 0) & (py < height)
-        fragments = np.zeros_like(x)
-        weights = luminosity * np.linspace(.12, .86, len(exposure)) * np.exp(-2.9*t)
-        np.add.at(fragments, (py[inside], px[inside]), weights[inside])
-        sheet += fragments
-        core = np.exp(-(x*x + y*y)/(6 + 20*t)**2) * 8 * np.exp(-12*t)
-        # Tone-map blue-white emission to amber as the expanding gas cools.
-        heat = np.exp(-4*t)
-        energy = (gas[..., None] * np.array([1.8, .42 + .95*heat, .11 + 1.8*heat])
-                  + sheet[..., None] * np.array([2.4, 1.44, .77])
-                  + core[..., None] * np.array([1.5, 1.8, 2.4]))
-        fade = 1 - smooth(1.0, BLAST_SECONDS, t)
-        rgb = (1 - np.exp(-energy)) * fade
-        alpha = rgb.max(axis=2)
-        color = rgb / np.maximum(alpha[..., None], 1e-6)
+        lines = Image.new("RGB", (WIDTH, HEIGHT))
+        draw = ImageDraw.Draw(lines)
+        # Sample along each filament from its trailing, cooler end to its leading tip.
+        age = np.maximum(0, t - launch)
+        sample_age = age[..., None] * np.linspace(0, 1, 9)
+        sample_age += np.maximum(age - length, 0)[..., None] * np.linspace(1, 0, 9)
+        d = speed[..., None] * (1 - np.exp(-1.2 * sample_age)) / 1.2
+        x = ox + d
+        ripple = np.sin(5 * sample_age + phase[..., None]) - np.sin(phase[..., None])
+        y = oy + pitch[..., None] * d + curl[..., None] * ripple
+        power = brightness * (1 - np.exp(-age*26)) * np.exp(-1.6 * age)
+        for index in np.ndindex(speed.shape):
+            row, _ = index
+            if power[index] < .035:
+                continue
+            warm = tint[row, 0]
+            color = np.array([.38+.62*warm, .74-.10*warm, 1-.59*warm])
+            for j in range(0, 8, 2):
+                points = list(zip(x[index][j:j+3], y[index][j:j+3]))
+                hot = .12 + .88 * ((j+2)/8)**2
+                rgb = np.minimum(255, (color + hot*.2) * 315 * power[index] * hot)
+                draw.line(points, fill=tuple(rgb.astype(int)), width=1)
+        radiance = np.asarray(lines, dtype=float) / 255
+        for blur, gain in [(2, 1.4), (9, 1.7)]:
+            radiance += gain * np.asarray(lines.filter(ImageFilter.GaussianBlur(blur))) / 255
+        # A short white diffraction spike and its blue halo extinguish before the
+        # fastest streamers cross the page. All the later light comes from the debris.
+        flash = np.exp(-8*t)
+        spike = np.exp(-np.abs(dx)/(22+165*(1-np.exp(-9*t))) - (dy/(.9+1.8*flash))**2)
+        core = np.exp(-np.hypot(dx, dy)/(3+15*flash))
+        radiance += flash * (spike[..., None] * np.array([2.4, 3.1, 4.3])
+                              + core[..., None] * np.array([6.5, 7.6, 9]))
+        light = (1 - np.exp(-radiance)) * (1 - smooth(1.05, BLAST_SECONDS, t))
+        alpha = light.max(axis=2)
+        color = light / np.maximum(alpha[..., None], 1e-6)
         rgba = np.dstack((color, alpha))
-        strip.paste(Image.fromarray(np.uint8(np.round(rgba * 255))), (0, i * height))
+        strip.paste(Image.fromarray(np.uint8(np.round(rgba * 255))), (0, i * HEIGHT))
     data = BytesIO()
-    strip.save(data, format="WEBP", quality=78, alpha_quality=80, method=4)
+    strip.save(data, format="WEBP", quality=81, alpha_quality=80, method=4)
     return b64encode(data.getvalue()).decode()
 
 
@@ -424,8 +427,8 @@ def build_svg():
     </radialGradient>
   </defs>
   <g transform="translate({CENTER_X} {CENTER_Y})" font-size="{FONT_SIZE}" aria-hidden="true">
-    <g transform="translate({bx:.2f} {by:.2f})">
-      <svg x="{-BLAST_WIDTH / 2}" y="{-BLAST_HEIGHT / 2}" width="{BLAST_WIDTH}" height="{BLAST_HEIGHT}" overflow="hidden">
+    <g>
+      <svg x="{-CENTER_X}" y="{-CENTER_Y}" width="{BLAST_WIDTH}" height="{BLAST_HEIGHT}" overflow="hidden">
         <image class="ejecta" width="{BLAST_WIDTH}" height="{BLAST_HEIGHT * BLAST_FRAMES}" xlink:href="data:image/webp;base64,{blast_strip()}"/>
       </svg>
     </g>
@@ -447,4 +450,4 @@ def build_svg():
 
 
 if __name__ == "__main__":
-    Path(__file__).with_name("black-hole.svg").write_text(build_svg(), encoding="utf-8")
+    Path(__file__).with_name("tidal-sweep.svg").write_text(build_svg(), encoding="utf-8")
