@@ -14,21 +14,23 @@ from PIL import Image, ImageFilter
 
 WIDTH, HEIGHT = 880, 300
 CENTER_X, CENTER_Y = 440, 145
-DURATION = 12
+FIRST_PICKUP = 2.8
+CAPTURE_INTERVAL = 0.43
 SHADOW = sqrt(27)
 DISK_SPAN = 44
-DISK_WIDTH = 512
-DISK_HEIGHT = 232
-EINSTEIN_RADIUS = 45
-LINES = ("Buidling random shit", "that pops up in my head")
-FONT_SIZE = 47
-TRACKING = 0.4
+DISK_WIDTH = 352
+DISK_HEIGHT = 160
+SENTENCE = "Buidling random shit that pops up in my head"
+FONT_SIZE = 30
+TEXT_LEFT = 54
+TEXT_BASELINE = 64
+TRACKING = 0.12
 
 # Arial-compatible advances in thousandths of an em.
 ADVANCES = {
-    " ": 278, "B": 722, "a": 556, "d": 611, "e": 556, "g": 611, "h": 611,
-    "i": 278, "l": 278, "m": 889, "n": 611, "o": 611, "p": 611, "r": 389,
-    "s": 556, "t": 333, "u": 611, "y": 556,
+    " ": 278, "B": 667, "a": 556, "d": 556, "e": 556, "g": 556, "h": 556,
+    "i": 222, "l": 222, "m": 833, "n": 556, "o": 556, "p": 556, "r": 333,
+    "s": 500, "t": 278, "u": 556, "y": 500,
 }
 
 STYLE = """
@@ -38,49 +40,11 @@ STYLE = """
   }
   text {
     font-family:Arial, "Liberation Sans", sans-serif;
-    font-weight:700;
+    font-weight:400;
     text-anchor:middle;
     fill:var(--title);
   }
   .motion { opacity:0; transform-origin:0 0; }
-  .hole { animation:hole 12s linear infinite; }
-  .point { animation:point 12s linear infinite; }
-  .flash { animation:flash 12s linear infinite; }
-  .wave { animation:wave 12s linear infinite; }
-  .embers { animation:embers 12s linear infinite; }
-  @keyframes hole {
-    0%, 21% { opacity:0; transform:scale(.04); }
-    27% { opacity:.55; transform:scale(.36); }
-    37% { opacity:1; transform:scale(.90); }
-    50% { opacity:1; transform:scale(1); }
-    56% { opacity:1; transform:scale(1.04); animation-timing-function:cubic-bezier(.55,0,.75,.40); }
-    65% { opacity:1; transform:scale(.025); }
-    66%, 100% { opacity:0; transform:scale(0); }
-  }
-  @keyframes point {
-    0%, 61% { opacity:0; transform:scale(.1); }
-    64% { opacity:1; transform:scale(.65); }
-    66% { opacity:1; transform:scale(1); }
-    67%, 100% { opacity:0; transform:scale(.25); }
-  }
-  @keyframes flash {
-    0%, 66% { opacity:0; transform:scale(.03); }
-    67.25% { opacity:.88; transform:scale(.66); }
-    70% { opacity:.32; transform:scale(1.18); }
-    76%, 100% { opacity:0; transform:scale(1.48); }
-  }
-  @keyframes wave {
-    0%, 66% { opacity:0; transform:scale(.02); }
-    67.4% { opacity:.58; transform:scale(.28); animation-timing-function:cubic-bezier(.22,.65,.45,1); }
-    75% { opacity:.18; transform:scale(1.43); }
-    80%, 100% { opacity:0; transform:scale(1.68); }
-  }
-  @keyframes embers {
-    0%, 66% { opacity:0; transform:scale(.01); }
-    67.5% { opacity:.9; transform:scale(.4); animation-timing-function:cubic-bezier(.22,.65,.40,1); }
-    75% { opacity:.54; transform:scale(.92); }
-    82%, 100% { opacity:0; transform:scale(1.25); }
-  }
 """
 
 
@@ -116,9 +80,8 @@ def sample_paths(path, impact_index, angle_index):
     return upper * (1 - fy) + lower * fy
 
 
-def render_disk():
+def disk_frame(impact, angles, path, phase):
     """Color the first optically thick disk intersection along each light ray."""
-    impact, angles, path = photon_paths()
     spacing = DISK_SPAN / DISK_WIDTH
     x = (np.arange(DISK_WIDTH) + 0.5 - DISK_WIDTH / 2) * spacing
     y = (DISK_HEIGHT / 2 - np.arange(DISK_HEIGHT) - 0.5) * spacing
@@ -150,15 +113,18 @@ def render_disk():
         # Frequency shift for photons from circular Keplerian emitters.
         angular_momentum = -x[hit] * np.cos(inclination)
         shift = np.sqrt(1 - 3 / r) / (1 - angular_momentum / r**1.5)
-        bands = (
-            0.63 + 0.18 * np.sin(12.0 * np.log(r) + 4 * azimuth)
-            + 0.11 * np.sin(27.0 * np.log(r) - 7 * azimuth)
-            + 0.08 * np.sin(45.0 * np.log(r) + 13 * azimuth)
-        )
+        # Advect emission around the same lensed disk. The inner wisps lap the
+        # cooler outer gas twice per texture loop, following the Portfolio disk.
+        log_r = np.log(r)
+        inner = np.clip((15 - r) / 7, 0, 1)
+        ripple = 48 * log_r + 2 * azimuth + 1.3 * np.sin(5 * azimuth - phase)
+        bands = (0.55 + 0.15 * np.sin(23 * log_r + 3 * azimuth - phase)
+                 + 0.14 * np.sin(ripple - phase)
+                 + inner * 0.14 * np.sin(82 * log_r - 4 * azimuth + 2 * phase))
         edge = np.minimum(np.clip((r - 6) / 0.35, 0, 1), np.clip((21.2 - r) / 5.1, 0, 1))
-        intensity = 5.6 * bands * (6 / r)**1.9 * shift**3.5 * edge
+        intensity = 4.7 * bands * (6 / r)**1.9 * shift**3.5 * edge
         brightness = 1 - np.exp(-intensity)
-        heat = np.clip(1.18 * brightness + 0.21 * (shift - 0.65), 0, 1)
+        heat = np.clip(1.12 * brightness + 0.21 * (shift - 0.65), 0, 1)
         cool = np.array([224, 66, 22])
         hot = np.array([255, 248, 224])
         emission = 1 - np.exp(-2.6 * intensity)
@@ -173,9 +139,15 @@ def render_disk():
     ).filter(ImageFilter.GaussianBlur(6))
     glow = Image.new("RGBA", image.size, (233, 105, 43))
     glow.putalpha(glow_alpha)
-    result = Image.alpha_composite(glow, image)
+    return Image.alpha_composite(glow, image)
+
+
+def render_disk():
+    rays = photon_paths()
+    frames = [disk_frame(*rays, 2 * pi * i / 24) for i in range(24)]
     data = BytesIO()
-    result.save(data, format="PNG", optimize=True)
+    frames[0].save(data, format="WEBP", save_all=True, append_images=frames[1:],
+                   duration=100, loop=0, quality=72, alpha_quality=80, method=4)
     return b64encode(data.getvalue()).decode()
 
 
@@ -195,86 +167,147 @@ def matrix(x, y, angle, radial, tangent, roll):
     return f"matrix({','.join(f'{n:.3f}' for n in values)},{x:.2f},{y:.2f})"
 
 
-def letter_frame(x, y, start, time, secondary):
-    radius, initial_angle = hypot(x, y), atan2(y, x)
-    finish = 6.0
-    if time >= 7.92:
-        # The shock sends glyphs outward, with a small overshoot before they settle.
-        p = min(1, (time - 7.92) / 1.36)
-        travel = 1 - (1 - p)**3 + 0.20 * sin(pi * p)**2 * p
-        scale = 0.09 + 0.91 * travel
-        return matrix(x * travel, y * travel, 0, scale, scale, (1 - travel) * 0.9), (
-            0 if secondary else smooth(0, 0.23, p)
-        )
-    p = min(1, max(0, (time - start) / (finish - start)))
-    if p == 1:
-        return "matrix(.01,0,0,.01,0,0)", 0
+def layout():
+    glyphs = []
+    left = TEXT_LEFT - CENTER_X
+    y = TEXT_BASELINE - CENTER_Y - FONT_SIZE * .345
+    for char in SENTENCE:
+        width = ADVANCES[char] * FONT_SIZE / 1000
+        if char != " ":
+            glyphs.append((left + width / 2, y, char, width))
+        left += width + TRACKING
+    return glyphs
 
-    orbit = initial_angle - 4.1 * p**1.55
-    distance = radius * (1 - p**1.9)
-    # The outer part of each orbit is foreshortened in the vertical direction.
-    # It opens up close to the shadow, where the lens can arc letters around it.
-    flattening = 1 - 0.61 * smooth(0, 0.22, p) * smooth(68, 146, distance)
-    orbit_x, orbit_y = distance * cos(orbit), distance * sin(orbit) * flattening
-    distance, angle = hypot(orbit_x, orbit_y), atan2(orbit_y, orbit_x)
-    # The point-mass lens equation gives outer and flipped inner images on one axis.
-    # Like the Portfolio effect, fade the lens away from the center of the artwork.
-    lens = EINSTEIN_RADIUS * smooth(2.55, 4.45, time) * (1 - smooth(90, 198, distance))
-    gap = hypot(distance, 2 * lens)
-    apparent = (distance + (-gap if secondary else gap)) / 2
-    radial = (1 + (-distance / gap if secondary else distance / gap)) / 2
-    tangent = min(2.2, abs(apparent) / distance)
-    stretch = 1 + 1.1 * smooth(0.38, 0.89, p)
-    size = 1 - 0.88 * smooth(0.5, 1, p)
-    roll = (orbit - initial_angle) * 0.78
-    shadow = SHADOW * 7.25 * (0.3 + 0.7 * smooth(3.2, 4.7, time))
-    visible = 1 - smooth(0.79, 1.0, p)
-    if secondary:
-        visible *= 0.42 * smooth(shadow, shadow + 9, abs(apparent))
 
-    return matrix(
-        apparent * cos(angle), apparent * sin(angle), angle,
-        size * radial * stretch, size * tangent / sqrt(stretch) * (-1 if secondary else 1), roll,
-    ), visible
+GLYPHS = layout()
+LAST_CAPTURE = FIRST_PICKUP + len(GLYPHS) * CAPTURE_INTERVAL
+COLLAPSE = LAST_CAPTURE + 0.68
+DOT = COLLAPSE + 1.15
+BANG = DOT + 0.28
+DURATION = BANG + 4.2
+# Like Portfolio's swallow(), add the area of each captured glyph to the mass.
+MASS = np.r_[0, np.cumsum([w * FONT_SIZE for _, _, _, w in GLYPHS])]
+RADII = 3.0 + 0.18 * np.sqrt(MASS)
+# Leave room ahead of the shadow for the next letter to peel off the page.
+TRACK = np.maximum.accumulate([g[0] - 29 - r for g, r in zip(GLYPHS, RADII)])
+
+
+def hole(time):
+    progress = min(len(GLYPHS), max(0, (time - FIRST_PICKUP) / CAPTURE_INTERVAL))
+    eaten = int(progress)
+    prev = max(0, eaten - 1)
+    radius = RADII[prev] + (RADII[eaten] - RADII[prev]) * smooth(0, .36, progress - eaten)
+    if time >= LAST_CAPTURE:
+        radius = RADII[-2] + (RADII[-1] - RADII[-2]) * smooth(LAST_CAPTURE, LAST_CAPTURE + .16, time)
+    x = np.interp(progress, range(len(TRACK)), TRACK)
+    if time < FIRST_PICKUP:
+        x = -WIDTH / 2 - 18 + (TRACK[0] + WIDTH / 2 + 18) * smooth(.85, FIRST_PICKUP, time)
+    drift = smooth(LAST_CAPTURE - CAPTURE_INTERVAL, COLLAPSE, time)
+    y = TEXT_BASELINE + 24 - CENTER_Y + .65 * radius + 3 * sin(progress * .2)
+    return x + 13 * drift, y, radius
+
+
+def lensed(x, y, time):
+    cx, cy, radius = hole(time)
+    dx, dy = x - cx, y - cy
+    d = hypot(dx, dy)
+    reach = 3 * radius + 63
+    einstein = radius * 1.25 * (1 - smooth(reach * .45, reach, d))
+    gap = hypot(d, 2 * einstein)
+    magnification = (1 + gap / d) / 2
+    return (cx + dx * magnification, cy + dy * magnification, atan2(dy, dx),
+            (1 + d / gap) / 2, magnification)
+
+
+def spiral(dx, dy, radius):
+    """Integrate Portfolio's tangential launch, inward acceleration, and orbital drag."""
+    distance = hypot(dx, dy)
+    gravity = 26000 + radius * 900
+    speed = sqrt(gravity) * .62
+    vx = (-dy * speed - dx * 30) / distance
+    vy = (dx * speed - dy * 30) / distance
+    points = [(dx, dy)]
+    while distance > radius * .9:
+        dt = max(.12, sqrt(max(0, 1 - radius / distance))) / 120
+        acceleration = gravity / max(distance, radius)
+        vx = (vx - dx / distance * acceleration * dt) * (1 - .85 * dt)
+        vy = (vy - dy / distance * acceleration * dt) * (1 - .85 * dt)
+        dx, dy = dx + vx * dt, dy + vy * dt
+        distance = hypot(dx, dy)
+        points.append((dx, dy))
+    return np.asarray(points)
+
+
+def keyframes(name, samples):
+    rules = [f"    {time / DURATION:.5%} {{ {properties} }}" for time, properties in samples]
+    return (f"  @keyframes {name} {{\n" + "\n".join(rules) + "\n  }\n"
+            + f"  .{name} {{ animation:{name} {DURATION:.3f}s linear infinite; }}")
+
+
+def pose(transform, opacity=1):
+    return f"transform:{transform}; opacity:{opacity:.3f};"
 
 
 def build_letters():
-    style, primary, secondary = [], [], []
-    for line, y in zip(LINES, (-39, 34)):
-        widths = [ADVANCES[char] / 1000 * FONT_SIZE for char in line]
-        left = -(sum(widths) + TRACKING * (len(line) - 1)) / 2
-        for char, width in zip(line, widths):
-            x = left + width / 2
-            left += width + TRACKING
-            if char == " ":
-                continue
-            start = 3.12 + 0.76 * smooth(37, 270, hypot(x, y))
-            start += (sin(x * 0.11) + 1) * 0.10
-            times = (
-                [0, 2.55, 2.82, 3.08, start]
-                + list(np.linspace(start, 6.0, 26)[1:])
-                + [7.92, 8.00, 8.10, 8.22, 8.38, 8.58, 8.85, 9.12, 9.28, DURATION]
-            )
-            for image, elements, is_secondary in [("outer", primary, False), ("inner", secondary, True)]:
-                name = f"{image}-{len(elements)}"
-                samples = [letter_frame(x, y, start, time, is_secondary) for time in times]
-                if is_secondary and max(opacity for _, opacity in samples) < 0.02:
-                    continue
-                frames = [
-                    f"    {time / DURATION:.5%} {{ transform:{transform}; opacity:{opacity:.3f}; }}"
-                    for time, (transform, opacity) in zip(times, samples)
-                ]
-                style.extend([
-                    f"  @keyframes {name} {{", *frames, "  }",
-                    f"  .{name} {{ animation:{name} {DURATION}s linear infinite; }}",
-                ])
-                # These base coordinates also show the undistorted text under reduced motion.
-                visibility = ' opacity="0"' if is_secondary else ""
-                elements.append(
-                    f'    <g class="{name}" transform="translate({x:.2f} {y})"{visibility}>'
-                    f'<text y="{FONT_SIZE * .345:.2f}">{escape(char)}</text></g>'
-                )
-    return "\n".join(style), "\n".join(primary), "\n".join(secondary)
+    styles, elements = [], []
+    bx, by, _ = hole(BANG)
+    for i, (x, y, char, _) in enumerate(GLYPHS):
+        start = FIRST_PICKUP + i * CAPTURE_INTERVAL
+        home = f"translate({x:.2f}px,{y:.2f}px)"
+        frames = [(0, pose(home))]
+        # Keep distant type anchored and sample the lens as it travels past.
+        for t in np.linspace(max(.85, start - 4), start, 23):
+            lx, ly, angle, radial, tangent = lensed(x, y, t)
+            frames.append((t, pose(matrix(lx, ly, angle, radial, tangent, 0))))
+        cx, cy, radius = hole(start)
+        orbit = spiral(lx - cx, ly - cy, radius)
+        for p in np.linspace(0, 1, 20)[1:]:
+            t = start + p * CAPTURE_INTERVAL
+            cx, cy, _ = hole(t)
+            dx, dy = orbit[round(p * (len(orbit) - 1))]
+            size = 1 - .92 * smooth(.05, 1, p)
+            stretch = 1 + 1.8 * smooth(.2, .87, p)
+            transform = matrix(cx + dx, cy + dy, atan2(dy, dx),
+                               radial * size * stretch, tangent * size / stretch, -2.5 * p)
+            frames.append((t, pose(transform, 1 - smooth(.87, 1, p))))
+        # The explosion starts at the final position of the hole. Each glyph follows
+        # its own bowed trajectory, overshoots slightly and settles back on its baseline.
+        for p in np.linspace(0, 1, 21):
+            t = BANG + p * 1.55
+            travel = 1 - (1 - p)**3 + .1 * sin(pi * p)**2
+            bend = sin(pi * p) * (1 - p) * (46 if i % 2 else -46)
+            size = .04 + .96 * travel
+            transform = matrix(bx + (x - bx) * travel, by + (y - by) * travel + bend,
+                               0, size, size, (1 - travel) * sin(i * 2.4) * 2)
+            frames.append((t, pose(transform, smooth(0, .14, p))))
+        frames.append((DURATION, pose(home)))
+        name = f"glyph-{i}"
+        styles.append(keyframes(name, frames))
+        elements.append(f'<g class="{name}" transform="translate({x:.2f} {y})">'
+                        f'<text y="{FONT_SIZE * .345:.2f}">{escape(char)}</text></g>')
+    return "\n".join(styles), "\n".join(elements)
+
+
+def effect_styles():
+    samples = []
+    times = np.unique(np.r_[np.arange(0, DOT, .065), COLLAPSE, DOT, BANG, DURATION])
+    for t in times:
+        cx, cy, r = hole(t)
+        shrink = 1 - smooth(COLLAPSE, DOT, t)
+        scale = r / (SHADOW * 7.25) * shrink
+        transform = f"translate({cx:.2f}px,{cy:.2f}px) scale({scale:.4f})"
+        samples.append((t, pose(transform, 1 if t < DOT else 0)))
+    styles = [keyframes("hole", samples)]
+    for name, sequence in {
+        "point": [(COLLAPSE, 0, .1), (DOT, 1, .63), (BANG, 1, .75), (BANG+.08, 0, .2)],
+        "flash": [(BANG, 0, .02), (BANG+.10, .94, .75), (BANG+.35, .4, 1.2), (BANG+.85, 0, 1.55)],
+        "wave": [(BANG, 0, .02), (BANG+.10, .65, .23), (BANG+.55, .29, 1.5), (BANG+1.2, 0, 2.4)],
+        "embers": [(BANG, 0, .01), (BANG+.13, .95, .42), (BANG+.62, .55, 1), (BANG+1.5, 0, 1.4)],
+    }.items():
+        frames = [(t, pose(f"scale({scale})", opacity))
+                  for t, opacity, scale in [(0, 0, 0), *sequence, (DURATION, 0, 0)]]
+        styles.append(keyframes(name, frames))
+    return "\n".join(styles)
 
 
 def burst_embers():
@@ -295,13 +328,15 @@ def burst_embers():
 
 def build_svg():
     disk = render_disk()
-    letters_style, primary, secondary = build_letters()
+    letters_style, letters = build_letters()
+    bx, by, _ = hole(BANG)
     return f"""<!-- Generated by black-hole/render.py. -->
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-labelledby="heading">
-  <title id="heading">{escape(" ".join(LINES))}</title>
+  <title id="heading">{escape(SENTENCE)}</title>
   <style>
 {STYLE}
 {letters_style}
+{effect_styles()}
   @media (prefers-reduced-motion: reduce) {{
     * {{ animation:none !important; }}
   }}
@@ -320,6 +355,7 @@ def build_svg():
     </radialGradient>
   </defs>
   <g transform="translate({CENTER_X} {CENTER_Y})" font-size="{FONT_SIZE}" aria-hidden="true">
+    <g transform="translate({bx:.2f} {by:.2f})">
     <g class="motion wave" fill="none">
       <ellipse rx="167" ry="84" stroke="#ffa75f" stroke-width="2.7"/>
       <ellipse rx="147" ry="73" stroke="#ffe0ae" stroke-opacity=".65" stroke-width=".9"/>
@@ -328,16 +364,18 @@ def build_svg():
     <g class="motion embers" stroke-linecap="round">
         {burst_embers()}
     </g>
-{primary}
-{secondary}
+    </g>
+{letters}
     <g class="motion hole">
       <g transform="rotate(-10)">
-        <image x="-159.5" y="-72.2734375" width="319" height="144.546875" xlink:href="data:image/png;base64,{disk}"/>
+        <image x="-159.5" y="-72.2734375" width="319" height="144.546875" xlink:href="data:image/webp;base64,{disk}"/>
       </g>
     </g>
+    <g transform="translate({bx:.2f} {by:.2f})">
     <g class="motion point">
       <circle r="12" fill="url(#point)"/>
       <circle r="1.5" fill="#fff7e7"/>
+    </g>
     </g>
   </g>
 </svg>
