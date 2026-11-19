@@ -189,7 +189,11 @@ DURATION = BANG + 4.2
 MASS = np.r_[0, np.cumsum([w * FONT_SIZE for _, _, _, w in GLYPHS])]
 RADII = 3.0 + 0.18 * np.sqrt(MASS)
 # Leave room ahead of the shadow for the next letter to peel off the page.
-TRACK = np.maximum.accumulate([g[0] - 29 - r for g, r in zip(GLYPHS, RADII)])
+first_x = GLYPHS[0][0]
+TRACK = np.maximum.accumulate([
+    x - r - 9 - 20 * smooth(first_x, first_x + 100, x)
+    for (x, _, _, _), r in zip(GLYPHS, RADII)
+])
 
 
 def hole(time):
@@ -203,7 +207,7 @@ def hole(time):
     if time < FIRST_PICKUP:
         x = -WIDTH / 2 - 18 + (TRACK[0] + WIDTH / 2 + 18) * smooth(.85, FIRST_PICKUP, time)
     drift = smooth(LAST_CAPTURE - CAPTURE_INTERVAL, COLLAPSE, time)
-    y = TEXT_BASELINE + 24 - CENTER_Y + .65 * radius + 3 * sin(progress * .2)
+    y = TEXT_BASELINE + 46 - CENTER_Y + .65 * radius + 3 * sin(progress * .2)
     return x + 13 * drift, y, radius
 
 
@@ -270,16 +274,21 @@ def build_letters():
             transform = matrix(cx + dx, cy + dy, atan2(dy, dx),
                                radial * size * stretch, tangent * size / stretch, -2.5 * p)
             frames.append((t, pose(transform, 1 - smooth(.87, 1, p))))
-        # The explosion starts at the final position of the hole. Each glyph follows
-        # its own bowed trajectory, overshoots slightly and settles back on its baseline.
-        for p in np.linspace(0, 1, 21):
-            t = BANG + p * 1.55
-            travel = 1 - (1 - p)**3 + .1 * sin(pi * p)**2
-            bend = sin(pi * p) * (1 - p) * (46 if i % 2 else -46)
-            size = .04 + .96 * travel
-            transform = matrix(bx + (x - bx) * travel, by + (y - by) * travel + bend,
-                               0, size, size, (1 - travel) * sin(i * 2.4) * 2)
-            frames.append((t, pose(transform, smooth(0, .14, p))))
+        # Eject each glyph with its own momentum, then bend the trajectory home.
+        rng = np.random.default_rng(810 + i)
+        azimuth = rng.uniform(0, 2 * pi)
+        speed = rng.uniform(70, 155)
+        release = BANG + rng.uniform(.035, .16)
+        duration = rng.uniform(1.16, 1.66)
+        for p in np.linspace(0, 1, 33):
+            t = release + p * duration
+            kick = 8 * p * (1 - p)**3
+            travel = smooth(.02, 1, p)
+            size = .08 + .92 * smooth(0, .67, p)
+            transform = matrix(bx + (x - bx) * travel + kick * speed * cos(azimuth),
+                               by + (y - by) * travel + kick * speed * sin(azimuth) * .64,
+                               0, size, size, 2.6 * sin(azimuth) * (1 - travel))
+            frames.append((t, pose(transform, smooth(.025, .2, p))))
         frames.append((DURATION, pose(home)))
         name = f"glyph-{i}"
         styles.append(keyframes(name, frames))
@@ -298,32 +307,98 @@ def effect_styles():
         transform = f"translate({cx:.2f}px,{cy:.2f}px) scale({scale:.4f})"
         samples.append((t, pose(transform, 1 if t < DOT else 0)))
     styles = [keyframes("hole", samples)]
-    for name, sequence in {
-        "point": [(COLLAPSE, 0, .1), (DOT, 1, .63), (BANG, 1, .75), (BANG+.08, 0, .2)],
-        "flash": [(BANG, 0, .02), (BANG+.10, .94, .75), (BANG+.35, .4, 1.2), (BANG+.85, 0, 1.55)],
-        "wave": [(BANG, 0, .02), (BANG+.10, .65, .23), (BANG+.55, .29, 1.5), (BANG+1.2, 0, 2.4)],
-        "embers": [(BANG, 0, .01), (BANG+.13, .95, .42), (BANG+.62, .55, 1), (BANG+1.5, 0, 1.4)],
-    }.items():
-        frames = [(t, pose(f"scale({scale})", opacity))
-                  for t, opacity, scale in [(0, 0, 0), *sequence, (DURATION, 0, 0)]]
-        styles.append(keyframes(name, frames))
+    point = [(0, 0, 0), (COLLAPSE, 0, .1), (DOT, 1, .63),
+             (BANG, 1, .8), (BANG + .06, 0, .1), (DURATION, 0, 0)]
+    styles.append(keyframes("point", [(t, pose(f"scale({scale})", opacity))
+                                     for t, opacity, scale in point]))
+    # The strip advances only after the dot bursts. Both ends of the strip are blank.
+    styles.append(keyframes("ejecta", [
+        (0, "transform:translateY(0);"),
+        (BANG, f"transform:translateY(0); animation-timing-function:steps({BLAST_FRAMES},end);"),
+        (BANG + BLAST_SECONDS, f"transform:translateY(-{BLAST_HEIGHT * BLAST_FRAMES}px);"),
+        (DURATION, f"transform:translateY(-{BLAST_HEIGHT * BLAST_FRAMES}px);"),
+    ]))
     return "\n".join(styles)
 
 
-def burst_embers():
-    rng = np.random.default_rng(77)
-    streaks = []
-    for i in range(46):
-        angle = rng.uniform(0, 2 * pi)
-        distance = rng.uniform(45, 283)
-        x, y = cos(angle) * distance, sin(angle) * distance * 0.54
-        length = rng.uniform(.015, .12)
-        shade = ["#ffcf98", "#ec8c62", "#ffd9b1", "#9ebbed"][i % 4]
-        streaks.append(
-            f'<path d="M{x * (1 - length):.1f} {y * (1 - length):.1f} L{x:.1f} {y:.1f}"'
-            f' stroke="{shade}" stroke-width="{rng.uniform(.75, 2.0):.2f}"/>'
-        )
-    return "\n        ".join(streaks)
+BLAST_WIDTH, BLAST_HEIGHT = 432, 232
+BLAST_FRAMES, BLAST_SECONDS = 42, 1.68
+
+
+def shell_emission(phase):
+    """Integrate a turbulent, optically thin shell along the line of sight."""
+    coord = np.linspace(-1.4, 1.4, 240, dtype=np.float32)
+    x, y = np.meshgrid(coord, coord)
+    light = np.zeros_like(x)
+    for z in np.linspace(-1.3, 1.3, 57):
+        r = np.sqrt(x*x + y*y + z*z)
+        warp = .68 * np.sin(3*x + 4*y - z + phase*.37) + .32 * np.cos(5*z - 4*x - phase*.45)
+        curls = np.sin(13*y + 5*z + 4*warp) * np.cos(9*x - 7*z + 3*warp + phase)
+        fine = np.sin(30*x + 18*z + 5*curls) * np.cos(17*y - 21*z + 3*warp)
+        front = .86 + .12 * warp + .09 * curls + .026 * fine
+        depth = (r - front) / .043
+        knots = np.exp(.9 * curls + .55 * fine + .7 * warp)
+        light += np.exp(-depth**2) * knots * .19
+    return light
+
+
+def blast_strip():
+    volumes = [shell_emission(phase) for phase in (0, .8, 1.6)]
+    rng = np.random.default_rng(448)
+    angles = rng.uniform(0, 2*pi, 96)
+    speeds = rng.uniform(190, 455, len(angles))
+    velocities = np.column_stack((np.cos(angles), .57*np.sin(angles))) * speeds[:, None]
+    luminosity = rng.uniform(.12, 1.4, (len(angles), 1))
+    height, width = BLAST_HEIGHT, BLAST_WIDTH
+    y, x = np.mgrid[:height, :width] - np.array([height / 2, width / 2])[:, None, None]
+    # Resolve the fast ejecta in the same tilted plane as the accretion disk.
+    tilt = -10 * pi / 180
+    along, across = x*cos(tilt) + y*sin(tilt), y*cos(tilt) - x*sin(tilt)
+    strip = Image.new("RGBA", (width, height * BLAST_FRAMES))
+    for i in range(1, BLAST_FRAMES):
+        t = i * BLAST_SECONDS / BLAST_FRAMES
+        radius = 9 + 95 * (1 - np.exp(-2.6*t))
+        phase = 2 * smooth(0, BLAST_SECONDS, t)
+        k = min(int(phase), 1)
+        mix = phase - k
+        shell = Image.fromarray((1 - mix) * volumes[k] + mix * volumes[k + 1])
+        scale = shell.width / (2.8 * radius)
+        sample = shell.transform((width, height), Image.Transform.AFFINE,
+                                 (scale, -.15*scale, shell.width/2 - scale*(width-.15*height)/2,
+                                  .12*scale, 1.16*scale, shell.height/2 - scale*(.12*width+1.16*height)/2),
+                                 Image.Resampling.BILINEAR)
+        gas = np.asarray(sample) * np.exp(-2.5*t) * 1.7
+        # A fast, thin sheet of ejecta tears away along the disk before the shell cools.
+        span = 7 + 179 * (1 - np.exp(-4.3*t))
+        sheet = np.exp(-(along/span)**4 - (across/(1.6 + 3*t))**2)
+        filaments = (.65 + .35*np.cos(24*along/span + 3*np.sin(6*along/span)))**2
+        sheet *= filaments * np.exp(-4.4*t) * 2.8
+        # Draw each hot fragment over a short exposure. Its trail shortens as it slows.
+        exposure = np.linspace(max(0, t-.028), t, 10)
+        displacement = (1 - np.exp(-1.95*exposure)) / 1.95
+        traces = velocities[:, None, :] * displacement[None, :, None]
+        px = np.rint(width/2 + traces[..., 0]).astype(int)
+        py = np.rint(height/2 + traces[..., 1]).astype(int)
+        inside = (px >= 0) & (px < width) & (py >= 0) & (py < height)
+        fragments = np.zeros_like(x)
+        weights = luminosity * np.linspace(.12, .86, len(exposure)) * np.exp(-2.9*t)
+        np.add.at(fragments, (py[inside], px[inside]), weights[inside])
+        sheet += fragments
+        core = np.exp(-(x*x + y*y)/(6 + 20*t)**2) * 8 * np.exp(-12*t)
+        # Tone-map blue-white emission to amber as the expanding gas cools.
+        heat = np.exp(-4*t)
+        energy = (gas[..., None] * np.array([1.8, .42 + .95*heat, .11 + 1.8*heat])
+                  + sheet[..., None] * np.array([2.4, 1.44, .77])
+                  + core[..., None] * np.array([1.5, 1.8, 2.4]))
+        fade = 1 - smooth(1.0, BLAST_SECONDS, t)
+        rgb = (1 - np.exp(-energy)) * fade
+        alpha = rgb.max(axis=2)
+        color = rgb / np.maximum(alpha[..., None], 1e-6)
+        rgba = np.dstack((color, alpha))
+        strip.paste(Image.fromarray(np.uint8(np.round(rgba * 255))), (0, i * height))
+    data = BytesIO()
+    strip.save(data, format="WEBP", quality=78, alpha_quality=80, method=4)
+    return b64encode(data.getvalue()).decode()
 
 
 def build_svg():
@@ -342,12 +417,6 @@ def build_svg():
   }}
   </style>
   <defs>
-    <radialGradient id="plasma">
-      <stop stop-color="#fff7e7"/>
-      <stop offset=".15" stop-color="#ffd4a1" stop-opacity=".95"/>
-      <stop offset=".43" stop-color="#ec8e55" stop-opacity=".46"/>
-      <stop offset="1" stop-color="#d35a38" stop-opacity="0"/>
-    </radialGradient>
     <radialGradient id="point">
       <stop stop-color="#fff"/>
       <stop offset=".25" stop-color="#fff4d4"/>
@@ -356,14 +425,9 @@ def build_svg():
   </defs>
   <g transform="translate({CENTER_X} {CENTER_Y})" font-size="{FONT_SIZE}" aria-hidden="true">
     <g transform="translate({bx:.2f} {by:.2f})">
-    <g class="motion wave" fill="none">
-      <ellipse rx="167" ry="84" stroke="#ffa75f" stroke-width="2.7"/>
-      <ellipse rx="147" ry="73" stroke="#ffe0ae" stroke-opacity=".65" stroke-width=".9"/>
-    </g>
-    <g class="motion flash"><ellipse rx="153" ry="103" fill="url(#plasma)"/></g>
-    <g class="motion embers" stroke-linecap="round">
-        {burst_embers()}
-    </g>
+      <svg x="{-BLAST_WIDTH / 2}" y="{-BLAST_HEIGHT / 2}" width="{BLAST_WIDTH}" height="{BLAST_HEIGHT}" overflow="hidden">
+        <image class="ejecta" width="{BLAST_WIDTH}" height="{BLAST_HEIGHT * BLAST_FRAMES}" xlink:href="data:image/webp;base64,{blast_strip()}"/>
+      </svg>
     </g>
 {letters}
     <g class="motion hole">
