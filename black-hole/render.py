@@ -22,7 +22,7 @@ SHADOW = sqrt(27)
 DISK_SPAN = 44
 DISK_WIDTH = 352
 DISK_HEIGHT = 160
-SENTENCE = "Buidling random shit that pops up in my head"
+SENTENCE = "anyway, it compiles"
 FONT_SIZE = 30
 TEXT_LEFT = 54
 TEXT_BASELINE = 64
@@ -30,7 +30,7 @@ TRACKING = 0.12
 
 # Arial-compatible advances in thousandths of an em.
 ADVANCES = {
-    " ": 278, "B": 667, "a": 556, "d": 556, "e": 556, "g": 556, "h": 556,
+    " ": 278, ",": 278, "c": 500, "w": 722, "B": 667, "a": 556, "d": 556, "e": 556, "g": 556, "h": 556,
     "i": 222, "l": 222, "m": 833, "n": 556, "o": 556, "p": 556, "r": 333,
     "s": 500, "t": 278, "u": 556, "y": 500,
 }
